@@ -116,3 +116,31 @@ Railway push'u algılayıp Dockerfile ile otomatik build alır. Sonrasında ana 
 2. Rapor açıldığında **Örnekler** sekmesinde thumbnail'lar görünüyor mu? (Görünmüyorsa Railway loglarında `[Scraper] Card detection found 0 cards` uyarısını ara — Meta layout değişmiş demektir, eski metin-parse yoluna düşer ama rapor yine oluşur.)
 3. **Öneriler** sekmesinde AI analizi var mı? (Yoksa loglarda `[Insights]` satırlarına bak.)
 4. **PDF** butonunu test et — ilk PDF ~10-15 sn sürebilir.
+
+
+---
+
+## v3 — Oyun kreatifi analizi (Eylül 2026, `feature/creative-analysis`)
+
+### Yeni özellikler
+- **Filtreler:** Ülke, sadece aktif, medya tipi (video/görsel), marka başı reklam limiti (1-100), **gösterime göre sıralama** (Meta'nın `total_impressions` sıralaması — kamuya açık en iyi "kazanan" sinyali). Filtreler yapıştırılan URL'nin üzerine sunucu tarafında uygulanır. Marka limiti 3 → 5.
+- **Kazanan skoru (0-1):** yayın süresi + "N reklam bu kreatifi kullanıyor" varyant sayısı + gösterim sırası.
+- **Kreatif analizi (opsiyonel, formda kutucuk):** Her markanın en yüksek skorlu video reklamları indirilir → ffmpeg ile hook (0.2/1/2/3 sn), body (4 kare) ve end card kareleri + kesme (tempo) tespiti → Claude vision ile oyun reklamı taksonomisine göre etiketleme → **Hook × Body matrisi** (lift ile) → playbook, ilk 3 sn gözlemleri, boşluklar.
+- **Konsept üretici:** Formdaki "Bizim oyun" alanı doldurulursa, kanıtlanmış hook×body eşleşmelerine dayanan 5 adet saniye saniye video konsepti üretilir (kopyala butonu ile brief olarak alınır).
+- **TR arayüz desteği:** Meta'nın güncel TR kart düzeni ("Kütüphane Kodu", "… tarihinde yayınlanmaya başladı", "Oyna") parse ediliyor.
+
+### Ortam değişkenleri
+| Değişken | Zorunlu | Açıklama |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Kreatif analiz için evet | Yoksa rapor oluşur, kreatif sekmesi "atlandı" der |
+| `CREATIVE_MODEL` | Hayır | Varsayılan `INSIGHTS_MODEL` → `claude-sonnet-4-6` |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | Hayır | Dockerfile artık ffmpeg kuruyor |
+
+### Maliyet / süre
+- Reklam başına ~9 kare (360px) + ~1.2k çıktı token'ı; marka başı 12 video × 3 marka ≈ 36 vision çağrısı + 1 sentez çağrısı.
+- Aynı anda 2 video işlenir; reklam başına ~20-40 sn.
+
+### Bilinen sınırlar
+- Video URL'leri imzalı ve kısa ömürlü — analiz scrape'ten hemen sonra yapılır; URL'ler rapora kaydedilmez.
+- Kareler rapor JSON'una gömülü (base64). Çok büyük raporlarda S3/R2'ye taşınmalı (sonraki faz).
+- Ses analiz edilmiyor (sadece var/yok bilgisi); voice-over/müzik analizi sonraki faz.

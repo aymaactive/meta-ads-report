@@ -5,6 +5,7 @@ import { Loader2, ArrowLeft, Copy, FileDown, Sparkles, Lightbulb, AlertCircle } 
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
+import CreativeTab, { type CreativeReport } from "@/components/CreativeTab";
 import {
   BarChart,
   Bar,
@@ -844,7 +845,7 @@ function ScrapeNotice({ brands }: { brands: BrandData[] }) {
       <p className="font-semibold mb-1">Reklam adedi hakkında</p>
       <p className="leading-relaxed">
         Raporlardaki sayılar, kütüphanenin gösterdiği toplam reklam sayısı değil,
-        analiz için çekilen örneklem adedidir (marka başına en fazla 20 reklam).
+        analiz için çekilen örneklem adedidir (rapor oluşturulurken seçilen marka başı limit kadar).
       </p>
       <ul className="mt-2 space-y-0.5">
         {partial.map((b) => (
@@ -902,6 +903,10 @@ export default function ReportView() {
     rawData.__insights && typeof rawData.__insights === "object"
       ? (rawData.__insights as ReportInsights)
       : null;
+  const creative: CreativeReport | null =
+    rawData.__creative && typeof rawData.__creative === "object"
+      ? (rawData.__creative as CreativeReport)
+      : null;
   const brands: BrandData[] = Object.entries(rawData)
     .filter(([key]) => !key.startsWith("__"))
     .map(([, b]: [string, any]) => ({
@@ -938,6 +943,20 @@ export default function ReportView() {
 
   const sections: { value: string; label: string; node: ReactNode }[] = [
     { value: "comparison", label: "Karşılaştırma", node: <ComparisonTab brands={brands} /> },
+    ...(creative
+      ? [
+          {
+            value: "creative",
+            label: "Hook × Body",
+            node: (
+              <CreativeTab
+                report={creative}
+                brandColors={Object.fromEntries(brands.map((b) => [b.name, b.color]))}
+              />
+            ),
+          },
+        ]
+      : []),
     { value: "captions", label: "Caption'lar", node: <CaptionsTab brands={brands} /> },
     { value: "platforms", label: "Platformlar", node: <PlatformsTab brands={brands} /> },
     { value: "monthly", label: "Aylık Trend", node: <MonthlyTrendsTab brands={brands} /> },
@@ -1061,12 +1080,12 @@ export default function ReportView() {
         <InsightsSummary insights={insights} />
         <ScrapeNotice brands={brands} />
         <Tabs defaultValue="comparison" className="w-full">
-          <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 mb-6 bg-white border border-slate-200 p-1 rounded-lg h-auto gap-1">
+          <TabsList className="flex flex-wrap w-full mb-6 bg-white border border-slate-200 p-1 rounded-lg h-auto gap-1">
             {sections.map((tab) => (
               <TabsTrigger
                 key={tab.value}
                 value={tab.value}
-                className="text-xs py-1.5 data-[state=active]:bg-emerald-500 data-[state=active]:text-white"
+                className="flex-1 min-w-[110px] text-xs py-1.5 data-[state=active]:bg-emerald-500 data-[state=active]:text-white"
               >
                 {tab.label}
               </TabsTrigger>

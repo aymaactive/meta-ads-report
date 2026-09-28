@@ -1,6 +1,13 @@
 import { nanoid } from "nanoid";
 import { createReport } from "../db";
-import { scrapeMetaAdsLibrary, TARGET_ADS, type BrandAdsData, type ProgressFn } from "./metaAdsScraper";
+import {
+  scrapeMetaAdsLibrary,
+  TARGET_ADS,
+  type BrandAdsData,
+  type ProgressFn,
+  type ScrapeOptions,
+} from "./metaAdsScraper";
+import { runCreativeAnalysis } from "./creative/creativePipeline";
 import { scrapeTikTokAdsLibrary } from "./tiktokAdsScraper";
 import { generateInsights } from "./adInsights";
 
@@ -14,6 +21,12 @@ export interface BrandInput {
 export interface RunReportInput {
   brands: BrandInput[];
   reportName?: string;
+  filters?: ScrapeOptions;
+  creative?: {
+    enabled: boolean;
+    maxPerBrand?: number;
+    gameContext?: string;
+  };
 }
 
 export interface RunReportHooks {
@@ -21,7 +34,8 @@ export interface RunReportHooks {
   onBrandProgress?: (index: number, scraped: number, target: number) => void;
   onBrandDone?: (index: number, adsCount: number) => void;
   onBrandError?: (index: number, error: string) => void;
-  onPhase?: (phase: "scrape" | "insights" | "save") => void;
+  onPhase?: (phase: "scrape" | "creative" | "insights" | "save") => void;
+  onCreativeProgress?: (done: number, total: number) => void;
 }
 
 export interface RunReportResult {
@@ -61,8 +75,8 @@ export async function runReport(
     try {
       const data =
         brand.source === "tiktok"
-          ? await scrapeTikTokAdsLibrary(brand.url, brand.name, onProgress)
-          : await scrapeMetaAdsLibrary(brand.url, brand.name, onProgress);
+          ? await scrapeTikTokAdsLibrary(brand.url, brand.name, onProgress, input.filters)
+          : await scrapeMetaAdsLibrary(brand.url, brand.name, onProgress, input.filters);
       results.push(data);
       hooks.onBrandDone?.(i, data.totalAds);
     } catch (error) {
@@ -82,6 +96,25 @@ export async function runReport(
     throw new Error(
       `Hiçbir marka analiz edilemedi. ${failed.map((f) => `${f.name}: ${f.error}`).join(" | ")}`
     );
+  }
+
+  // ── Creative (video) analysis layer — must run right after scraping,
+  //    while the signed CDN video URLs are still valid ──
+  let creative = null;
+  if (input.creative?.enabled) {
+    hooks.onPhase?.("creative");
+    creative = await runCreativeAnalysis(
+      succeeded.map((s) => s.r),
+      {
+        maxPerBrand: input.creative.maxPerBrand,
+        gameContext: input.creative.gameContext,
+        sortedByImpressions: Boolean(input.filters?.sortByImpressions),
+        onProgress: hooks.onCreativeProgress,
+      }
+    ).catch((e) => {
+      console.error("[ReportRunner] creative analysis failed:", (e as Error).message);
+      return null;
+    });
   }
 
   // ── AI insight layer (optional, never blocks report creation) ──
@@ -104,6 +137,14 @@ export async function runReport(
     };
   });
   if (insights) reportData.__insights = insights;
+  if (creative) reportData.__creative = creative;
+  // Signed CDN URLs expire within hours — don't persist dead links
+  for (const key of Object.keys(reportData)) {
+    const b = reportData[key];
+    if (b && Array.isArray(b.ads)) {
+      b.ads = b.ads.map(({ videoUrl, posterUrl, ...rest }: any) => ({ ...rest, hasVideo: Boolean(videoUrl) }));
+    }
+  }
 
   await createReport({
     userId: 0,

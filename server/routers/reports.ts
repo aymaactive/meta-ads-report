@@ -38,8 +38,27 @@ const brandInputSchema = z
   });
 
 const scrapeInputSchema = z.object({
-  brands: z.array(brandInputSchema).min(1).max(3),
+  brands: z.array(brandInputSchema).min(1).max(5),
   reportName: z.string().min(1).max(255).optional(),
+  filters: z
+    .object({
+      maxAds: z.number().int().min(1).max(100).optional(),
+      country: z
+        .string()
+        .regex(/^([A-Za-z]{2}|ALL)$/)
+        .optional(),
+      activeOnly: z.boolean().optional(),
+      mediaType: z.enum(["all", "video", "image"]).optional(),
+      sortByImpressions: z.boolean().optional(),
+    })
+    .optional(),
+  creative: z
+    .object({
+      enabled: z.boolean(),
+      maxPerBrand: z.number().int().min(1).max(40).optional(),
+      gameContext: z.string().max(2000).optional(),
+    })
+    .optional(),
 });
 
 export const reportsRouter = router({

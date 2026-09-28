@@ -2,11 +2,32 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Loader2, Plus, Trash2, Copy, ExternalLink, BarChart2, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Loader2, Plus, Trash2, Copy, ExternalLink, BarChart2, CheckCircle2, XCircle, Clock, Film } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 
-const BRAND_COLORS = ["#10b981", "#ec4899", "#6366f1"];
+const BRAND_COLORS = ["#10b981", "#ec4899", "#6366f1", "#f59e0b", "#0ea5e9"];
+const MAX_BRANDS = 5;
+
+type Filters = {
+  maxAds: number;
+  country: string;
+  activeOnly: boolean;
+  mediaType: "all" | "video" | "image";
+  sortByImpressions: boolean;
+};
+
+type CreativeSettings = { enabled: boolean; maxPerBrand: number; gameContext: string };
+
+const DEFAULT_FILTERS: Filters = {
+  maxAds: 20,
+  country: "ALL",
+  activeOnly: true,
+  mediaType: "all",
+  sortByImpressions: true,
+};
+
+const COUNTRIES = ["ALL", "US", "PH", "TR", "GB", "DE", "BR", "IN"];
 const STORAGE_KEY = "meta-ads-report-tokens";
 
 function getSavedTokens(): string[] {
@@ -36,6 +57,8 @@ export default function DynamicReport() {
     { name: "", url: "", color: BRAND_COLORS[0], source: "meta" },
   ]);
   const [isCreating, setIsCreating] = useState(false);
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [creative, setCreative] = useState<CreativeSettings>({ enabled: false, maxPerBrand: 12, gameContext: "" });
   const [savedTokens, setSavedTokens] = useState<string[]>([]);
 
   useEffect(() => {
@@ -101,10 +124,10 @@ export default function DynamicReport() {
   });
 
   const handleAddBrand = () => {
-    if (brands.length < 3) {
+    if (brands.length < MAX_BRANDS) {
       setBrands([...brands, { name: "", url: "", color: BRAND_COLORS[brands.length], source: "meta" }]);
     } else {
-      toast.error("Maksimum 3 marka ekleyebilirsiniz");
+      toast.error(`Maksimum ${MAX_BRANDS} marka ekleyebilirsiniz`);
     }
   };
 
@@ -141,7 +164,17 @@ export default function DynamicReport() {
       }
     }
     setIsCreating(true);
-    startJobMutation.mutate({ brands });
+    startJobMutation.mutate({
+      brands,
+      filters,
+      creative: creative.enabled
+        ? {
+            enabled: true,
+            maxPerBrand: creative.maxPerBrand,
+            ...(creative.gameContext.trim() ? { gameContext: creative.gameContext.trim() } : {}),
+          }
+        : undefined,
+    });
   };
 
   const handleCopyShareLink = (shareToken: string) => {
@@ -173,7 +206,7 @@ export default function DynamicReport() {
           <CardHeader className="pb-3">
             <CardTitle className="text-lg">Marka Ekle</CardTitle>
             <CardDescription>
-              1-3 marka arasında karşılaştırmalı rapor oluşturun. Marka adı ve Meta Ads Library URL'sini girin.
+              1-5 marka arasında karşılaştırmalı rapor oluşturun. Marka adı ve Meta Ads Library URL'sini girin.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -267,11 +300,133 @@ export default function DynamicReport() {
               </div>
             ))}
 
+            {/* Filters */}
+            <div className="rounded-lg border border-slate-200 p-4 space-y-3">
+              <span className="text-sm font-medium text-slate-700">Filtreler</span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Ülke</label>
+                  <select
+                    value={filters.country}
+                    onChange={(e) => setFilters({ ...filters, country: e.target.value })}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                  >
+                    {COUNTRIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c === "ALL" ? "Tümü" : c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Medya</label>
+                  <select
+                    value={filters.mediaType}
+                    onChange={(e) => setFilters({ ...filters, mediaType: e.target.value as Filters["mediaType"] })}
+                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                  >
+                    <option value="all">Tümü</option>
+                    <option value="video">Video</option>
+                    <option value="image">Görsel</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Marka başı reklam</label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={filters.maxAds}
+                    onChange={(e) =>
+                      setFilters({ ...filters, maxAds: Math.max(1, Math.min(100, Number(e.target.value) || 20)) })
+                    }
+                    className="h-9 text-sm"
+                  />
+                </div>
+                <div className="flex flex-col justify-end gap-1.5 text-xs text-slate-600">
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={filters.activeOnly}
+                      onChange={(e) => setFilters({ ...filters, activeOnly: e.target.checked })}
+                    />
+                    Sadece aktif
+                  </label>
+                  <label className="flex items-center gap-1.5" title="Meta: toplam gösterime göre sırala (kazanan sinyali)">
+                    <input
+                      type="checkbox"
+                      checked={filters.sortByImpressions}
+                      onChange={(e) => setFilters({ ...filters, sortByImpressions: e.target.checked })}
+                    />
+                    Gösterime göre sırala
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Creative (video) analysis */}
+            <div
+              className={`rounded-lg border p-4 space-y-3 ${
+                creative.enabled ? "border-violet-300 bg-violet-50/40" : "border-slate-200"
+              }`}
+            >
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={creative.enabled}
+                  onChange={(e) => {
+                    setCreative({ ...creative, enabled: e.target.checked });
+                    if (e.target.checked && filters.mediaType === "image") setFilters({ ...filters, mediaType: "video" });
+                  }}
+                />
+                <Film className="w-4 h-4 text-violet-500" />
+                Kreatif analizi (video hook / body / end card)
+              </label>
+              {creative.enabled && (
+                <>
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    Her markanın en güçlü video reklamları (yayın süresi + varyant + gösterim sırası) indirilir, kare
+                    kare AI ile incelenir ve hook × body eşleşmeleri çıkarılır. Reklam başına ~20-40 sn sürer.
+                  </p>
+                  <div className="grid grid-cols-[140px_1fr] gap-3 items-start">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1 block">Marka başı video</label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={40}
+                        value={creative.maxPerBrand}
+                        onChange={(e) =>
+                          setCreative({
+                            ...creative,
+                            maxPerBrand: Math.max(1, Math.min(40, Number(e.target.value) || 12)),
+                          })
+                        }
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1 block">
+                        Bizim oyun (opsiyonel — doldurursan konsept önerileri üretilir)
+                      </label>
+                      <textarea
+                        value={creative.gameContext}
+                        onChange={(e) => setCreative({ ...creative, gameContext: e.target.value.slice(0, 2000) })}
+                        rows={3}
+                        placeholder="örn: Row Block — alttan renkli tile fırlatıp satır doldurma; yukarıdan inen tile grupları, roket/bomba power-up'ları, rakun maskot…"
+                        className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-2 text-xs"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
             <div className="flex gap-3 pt-1">
               <Button
                 variant="outline"
                 onClick={handleAddBrand}
-                disabled={brands.length >= 3}
+                disabled={brands.length >= MAX_BRANDS}
                 size="sm"
                 className="gap-1.5"
               >
@@ -339,6 +494,13 @@ export default function DynamicReport() {
                     </span>
                   </div>
                 ))}
+                {job.status === "running" && job.phase === "creative" && (
+                  <p className="text-xs text-slate-600 flex items-center gap-1.5 pt-1 border-t border-emerald-100">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Video kreatifler analiz ediliyor
+                    {job.creative ? ` (${job.creative.done}/${job.creative.total})` : ""}...
+                  </p>
+                )}
                 {job.status === "running" && job.phase === "insights" && (
                   <p className="text-xs text-slate-600 flex items-center gap-1.5 pt-1 border-t border-emerald-100">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />

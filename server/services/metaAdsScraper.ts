@@ -4,6 +4,49 @@ import fs from "fs";
 
 // ─── How many ads to collect ──────────────────────────────────────────────────
 export const TARGET_ADS = 20;
+/** Hard ceiling for a single brand (scroll time + thumbnail payload). */
+export const MAX_ADS_LIMIT = 100;
+
+/**
+ * Library-level filters. Applied to the Ads Library URL server-side so the
+ * user can paste any page/keyword URL and still get e.g. "active video ads in
+ * the US, sorted by impressions".
+ */
+export interface ScrapeOptions {
+  maxAds?: number;
+  /** ISO-2 country code ("US", "PH", "TR") or "ALL". */
+  country?: string;
+  activeOnly?: boolean;
+  mediaType?: "all" | "video" | "image";
+  /** Meta can sort by total impressions — the best public "winner" proxy. */
+  sortByImpressions?: boolean;
+}
+
+export function resolveMaxAds(opts?: ScrapeOptions): number {
+  const n = Math.floor(opts?.maxAds ?? TARGET_ADS);
+  return Math.max(1, Math.min(MAX_ADS_LIMIT, isNaN(n) ? TARGET_ADS : n));
+}
+
+/** Rewrite the Ads Library URL's query params according to the filters. */
+export function applyMetaFilters(rawUrl: string, opts?: ScrapeOptions): string {
+  if (!opts) return rawUrl;
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  const p = u.searchParams;
+  if (opts.country) p.set("country", opts.country.toUpperCase());
+  if (opts.activeOnly !== undefined) p.set("active_status", opts.activeOnly ? "active" : "all");
+  if (opts.mediaType) p.set("media_type", opts.mediaType);
+  if (opts.sortByImpressions) {
+    p.set("sort_data[mode]", "total_impressions");
+    p.set("sort_data[direction]", "desc");
+  }
+  if (!p.get("ad_type")) p.set("ad_type", "all");
+  return u.toString();
+}
 
 // Max size guards for embedded thumbnails (base64 chars)
 const MAX_THUMB_CHARS = 180_000; // ~135KB binary per thumbnail
@@ -47,6 +90,18 @@ export interface AdData {
   libraryUrl: string;
   /** Either a data-URI (Meta: embedded screenshot) or a remote URL (TikTok). */
   thumbnail?: string;
+  /** Direct (short-lived, signed) CDN URL of the video creative, if any. */
+  videoUrl?: string;
+  /** Poster / first-frame image URL of the video (short-lived). */
+  posterUrl?: string;
+  /**
+   * How many ads share this exact creative + text ("N ads use this creative
+   * and text"). A strong scaling signal: advertisers duplicate winners.
+   */
+  variantCount?: number;
+  isActive?: boolean;
+  /** 0–1 heuristic "winner" score (longevity, variants, impression rank) */
+  winnerScore?: number;
 }
 
 export interface BrandAdsData {
@@ -122,6 +177,7 @@ const CTA_LABELS = [
   "Daha fazlasını izle", "Kaydol", "Rezervasyon yap", "İndir", "Teklif al",
   "Bize ulaşın", "Başvur", "Abone ol", "Fiyat teklifi al", "Menüye bak",
   "Mesaj gönder", "Şimdi ara", "Sipariş ver", "Yol tarifi al", "Uygulamayı kullan",
+  "Oyna", "Oyunu oyna", "Uygulamayı yükle", "Yükle", "Daha fazla bilgi",
 ];
 
 // Case-insensitive lookup (both EN and TR lowercasing to handle İ/i correctly)
@@ -147,6 +203,9 @@ const META_LINE_RES = [
   /^library id\b/i,
   /^kitaplık kimliği/i,
   /^kimlik\s*:/i,
+  /^kütüphane kodu/i,
+  /^reklam detaylarını gör$/i,
+  /\d+\s+(ads use this creative|reklam bu kreatifi)/i,
   /^see ad details$/i,
   /^see summary details$/i,
   /^reklam ayrıntılarını gör$/i,
@@ -165,13 +224,22 @@ function isCaptionStopLine(line: string): boolean {
   return META_LINE_RES.some((re) => re.test(t));
 }
 
-const LIB_RE = /(?:Library ID|Kitaplık Kimliği|Kimlik)\s*:?\s*(\d{6,})/;
+const LIB_RE = /(?:Library ID|Kitaplık Kimliği|Kütüphane Kodu|Kimlik)\s*:?\s*(\d{6,})/;
 const DATE_RE = /(?:Started running on|Yayınlanmaya başl[^\n:]*[:\s])\s*([^\n·]+)/i;
+// Current TR layout puts the date first: "26 Ağu 2026 tarihinde yayınlanmaya başladı"
+const DATE_TR_RE = /([^\n·]+?)\s+tarihinde yayınlanmaya başladı/i;
+// "5 ads use this creative and text" / "5 reklam bu kreatifi ve metni kullanıyor"
+const VARIANT_RE = /(\d+)\s+(?:ads use this creative|reklam bu kreatifi)/i;
 
 /** Parse a single ad card's innerText into structured fields. */
-export function parseAdCardText(block: string, idx: number): Omit<AdData, "daysRunning" | "libraryUrl"> {
+export function parseAdCardText(
+  block: string,
+  idx: number
+): Omit<AdData, "daysRunning" | "libraryUrl" | "thumbnail" | "videoUrl" | "posterUrl"> {
   const libMatch = block.match(LIB_RE);
-  const dateMatch = block.match(DATE_RE);
+  const dateMatch = block.match(DATE_TR_RE) ?? block.match(DATE_RE);
+  const variantMatch = block.match(VARIANT_RE);
+  const isActive = /^(Active|Aktif)$/m.test(block);
   const lines = block.split("\n");
 
   // ── Caption: lines after the standalone "Sponsored"/"Sponsorlu" line, up to
@@ -241,6 +309,8 @@ export function parseAdCardText(block: string, idx: number): Omit<AdData, "daysR
     cta,
     platforms,
     format,
+    ...(variantMatch ? { variantCount: Number(variantMatch[1]) } : {}),
+    isActive,
   };
 }
 
@@ -279,10 +349,13 @@ export function aggregateBrandStats(ads: AdData[]) {
 }
 
 export async function scrapeMetaAdsLibrary(
-  url: string,
+  rawUrl: string,
   brandName: string,
-  onProgress?: ProgressFn
+  onProgress?: ProgressFn,
+  opts?: ScrapeOptions
 ): Promise<BrandAdsData> {
+  const url = applyMetaFilters(rawUrl, opts);
+  const target = resolveMaxAds(opts);
   const pageId = extractPageId(url);
   let browser;
 
@@ -330,20 +403,21 @@ export async function scrapeMetaAdsLibrary(
     const countLoadedAds = () =>
       page.evaluate(() => {
         const t = document.body.innerText;
-        return (t.match(/Library ID:|Kitaplık Kimliği/g) || []).length;
+        return (t.match(/Library ID:|Kitaplık Kimliği|Kütüphane Kodu/g) || []).length;
       });
 
     let lastCount = 0;
     let stagnant = 0;
-    const maxScrolls = 14;
+    // ~1.5 cards per viewport scroll; leave headroom for slow lazy loads
+    const maxScrolls = Math.min(80, Math.ceil(target / 1.5) + 4);
     for (let i = 0; i < maxScrolls; i++) {
       await page.evaluate(() => window.scrollBy(0, 2500));
       await new Promise((r) => setTimeout(r, 1300));
 
       const count = await countLoadedAds();
-      onProgress?.(Math.min(count, TARGET_ADS), TARGET_ADS);
+      onProgress?.(Math.min(count, target), target);
 
-      if (count >= TARGET_ADS) break;
+      if (count >= target) break;
       if (count === lastCount) {
         stagnant++;
         if (stagnant >= 3) break;
@@ -358,7 +432,7 @@ export async function scrapeMetaAdsLibrary(
     //    their innerText. Card-level extraction keeps text↔thumbnail aligned. ──
     const cardTexts: string[] = await page.evaluate((target: number) => {
       const libMarker = (t: string) =>
-        t.includes("Library ID:") || t.includes("Kitaplık Kimliği");
+        t.includes("Library ID:") || t.includes("Kitaplık Kimliği") || t.includes("Kütüphane Kodu");
       // "Sponsored" lives inside the ad-preview branch while Library ID lives
       // in the metadata header branch — the deepest element containing BOTH is
       // the full ad card. (Using the start-date as a marker was the v2 bug:
@@ -376,7 +450,25 @@ export async function scrapeMetaAdsLibrary(
       const limited = cards.slice(0, target);
       limited.forEach((el, i) => el.setAttribute("data-mar-card", String(i)));
       return limited.map((el) => el.innerText || "");
-    }, TARGET_ADS);
+    }, target);
+
+    // ── Video creative URLs (progressive mp4 on fbcdn) + poster per card ──
+    const cardMedia: { videoUrl?: string; posterUrl?: string }[] = await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll("div[data-mar-card]")) as HTMLElement[];
+      return cards.map((card) => {
+        const v = card.querySelector("video") as HTMLVideoElement | null;
+        if (!v) return {};
+        const src =
+          v.currentSrc ||
+          v.src ||
+          (v.querySelector("source") as HTMLSourceElement | null)?.src ||
+          "";
+        return {
+          ...(src.startsWith("http") ? { videoUrl: src } : {}),
+          ...(v.poster ? { posterUrl: v.poster } : {}),
+        };
+      });
+    });
 
     let parsed: ReturnType<typeof parseAdCardText>[] = [];
     let thumbnails: (string | undefined)[] = [];
@@ -440,9 +532,9 @@ export async function scrapeMetaAdsLibrary(
         const text = document.body.innerText;
         const parts = text.split(/\n(?=(?:Active|Aktif)\n)/);
         return parts
-          .filter((b) => b.includes("Library ID:") || b.includes("Kitaplık Kimliği"))
+          .filter((b) => b.includes("Library ID:") || b.includes("Kitaplık Kimliği") || b.includes("Kütüphane Kodu"))
           .slice(0, target);
-      }, TARGET_ADS);
+      }, target);
       parsed = blocks.map((b, i) => parseAdCardText(b, i));
       thumbnails = blocks.map(() => undefined);
     }
@@ -455,9 +547,12 @@ export async function scrapeMetaAdsLibrary(
       daysRunning: daysSince(ad.startDate),
       libraryUrl: `https://www.facebook.com/ads/library/?id=${ad.libraryId}`,
       ...(thumbnails[i] ? { thumbnail: thumbnails[i] } : {}),
+      ...(cardMedia[i] ?? {}),
+      // A video element is the most reliable format signal
+      ...(cardMedia[i]?.videoUrl ? { format: "Video" } : {}),
     }));
 
-    onProgress?.(ads.length, TARGET_ADS);
+    onProgress?.(ads.length, target);
 
     const stats = aggregateBrandStats(ads);
 

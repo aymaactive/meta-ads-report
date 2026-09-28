@@ -2,7 +2,7 @@ import puppeteer from "puppeteer";
 import { execSync } from "child_process";
 import fs from "fs";
 import type { AdData, BrandAdsData } from "./metaAdsScraper";
-import { TARGET_ADS, type ProgressFn } from "./metaAdsScraper";
+import { resolveMaxAds, type ProgressFn, type ScrapeOptions } from "./metaAdsScraper";
 
 /**
  * TikTok Commercial Content Library scraper.
@@ -82,6 +82,8 @@ interface RawTikTokAd {
   first: number | null; // epoch ms
   last: number | null; // epoch ms
   image: string | null; // first thumbnail URL from the library API
+  video: string | null; // direct video URL, when the API exposes one
+  cover: string | null;
 }
 
 function daysSinceMs(ms: number | null): number {
@@ -100,8 +102,10 @@ function msToDateString(ms: number | null): string {
 export async function scrapeTikTokAdsLibrary(
   url: string,
   brandName: string,
-  onProgress?: ProgressFn
+  onProgress?: ProgressFn,
+  opts?: ScrapeOptions
 ): Promise<BrandAdsData> {
+  const TARGET_ADS = resolveMaxAds(opts);
   const pageId = extractTikTokId(url);
   let browser;
 
@@ -148,6 +152,17 @@ export async function scrapeTikTokAdsLibrary(
                     first: d.first_shown_date || null,
                     last: d.last_shown_date || null,
                     image: Array.isArray(d.image_urls) && d.image_urls.length > 0 ? d.image_urls[0] : null,
+                    // Field names vary between API versions — probe defensively
+                    video: (() => {
+                      const v = Array.isArray(d.videos) ? d.videos[0] : null;
+                      if (!v) return null;
+                      if (typeof v === "string") return v;
+                      return v.video_url || v.play_url || v.url || v.download_url || null;
+                    })(),
+                    cover: (() => {
+                      const v = Array.isArray(d.videos) ? d.videos[0] : null;
+                      return (v && typeof v === "object" && (v.cover_img || v.cover || v.poster)) || null;
+                    })(),
                   };
                 });
                 if (typeof j.total === "number") (window as any).__ttTotal = j.total;
@@ -169,7 +184,7 @@ export async function scrapeTikTokAdsLibrary(
     // Click "View more" until we have at least TARGET_ADS ads captured, or the
     // button disappears / stops yielding new ads.
     let stagnant = 0;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < Math.ceil(TARGET_ADS / 10) + 4; i++) {
       const count = await page.evaluate(() => Object.keys((window as any).__ttAds || {}).length);
       onProgress?.(Math.min(count, TARGET_ADS), TARGET_ADS);
       if (count >= TARGET_ADS) break;
@@ -217,6 +232,8 @@ export async function scrapeTikTokAdsLibrary(
       format: ad.isVideo ? "Video" : "Image/Carousel",
       libraryUrl: `https://library.tiktok.com/ads/detail/?ad_id=${ad.id}`,
       ...(ad.image ? { thumbnail: ad.image } : {}),
+      ...(ad.video ? { videoUrl: ad.video } : {}),
+      ...(ad.cover ? { posterUrl: ad.cover } : {}),
     }));
 
     onProgress?.(ads.length, TARGET_ADS);

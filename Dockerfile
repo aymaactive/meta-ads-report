@@ -20,7 +20,7 @@ FROM node:20-bookworm AS production
 
 # Install Chromium via apt (bookworm has all required libs)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium \
+    && apt-get install -y --no-install-recommends chromium ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PUPPETEER_SKIP_DOWNLOAD=true

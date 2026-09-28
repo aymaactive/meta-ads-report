@@ -28,7 +28,8 @@ export interface BrandJobState {
 export interface ScrapeJob {
   id: string;
   status: JobStatus;
-  phase?: "scrape" | "insights" | "save";
+  phase?: "scrape" | "creative" | "insights" | "save";
+  creative?: { done: number; total: number };
   brands: BrandJobState[];
   queuePosition?: number;
   shareToken?: string;
@@ -66,7 +67,7 @@ export function enqueueScrapeJob(input: RunReportInput): { jobId: string } {
       name: b.name,
       status: "queued",
       scraped: 0,
-      target: TARGET_ADS,
+      target: input.filters?.maxAds ?? TARGET_ADS,
     })),
     createdAt: Date.now(),
   });
@@ -104,6 +105,9 @@ async function processNext(): Promise<void> {
     const result = await runReport(next.input, {
       onPhase: (phase) => {
         job.phase = phase;
+      },
+      onCreativeProgress: (done, total) => {
+        job.creative = { done, total };
       },
       onBrandStart: (i) => {
         job.brands[i].status = "running";
